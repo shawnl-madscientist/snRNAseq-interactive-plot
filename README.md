@@ -24,7 +24,8 @@ export ZF_H5AD="/path/to/ZF_RNA_final_browser_raw_counts.h5ad"
 
 ## Run
 ```bash
-python zf_viz.py                                         # interactive app at http://127.0.0.1:8050
+pip install git+https://github.com/shawnl-madscientist/snRNAseq-interactive-plot.git
+zf-viz --h5ad /path/to/file.h5ad             # interactive app at http://127.0.0.1:8050
 python zf_viz.py --export MEF2C MEF2A --sex MALE         # static HTML files, no server
 ```
 The first launch takes a few minutes to compute per-cell totals, then caches them in `zf_cell_totals.npy`.
