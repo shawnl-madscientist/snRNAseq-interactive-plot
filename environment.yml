@@ -1,0 +1,14 @@
+name: zf-viz
+channels:
+  - conda-forge
+dependencies:
+  - python=3.14.0
+  - pip
+  # Read the .h5ad file directly (anndata/scanpy are NOT needed)
+  - h5py>=3.16
+  # Data handling
+  - numpy>=2.4
+  - pandas>=3.0
+  # Interactive plots and the filter web page
+  - plotly>=6.7
+  - dash>=4.5

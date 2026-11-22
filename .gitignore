@@ -1,3 +1,4 @@
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -221,3 +222,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Data (1.1 GB, do not commit)
+*.h5ad
+# Generated per-cell totals cache (rebuilt automatically on first run)
+zf_cell_totals.npy
+# Exported figures (each ~5 MB)
+*_bars.html
+*_dot_group.html
+# Python / editor / OS
+__pycache__/
+.venv/
+venv/
+.DS_Store
+.vscode/
