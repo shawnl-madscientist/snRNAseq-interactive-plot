@@ -1,0 +1,25 @@
+cat > pyproject.toml << 'EOF'
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zf-viz"
+version = "0.1.0"
+description = "Interactive explorer for zebra finch snRNA-seq (.h5ad) data"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "h5py>=3.10", 
+    "numpy>=1.26", 
+    "pandas>=2.1", 
+    "plotly>=5.18", 
+    "dash>=2.14"
+    ]
+
+[project.scripts]
+zf-viz = "zf_viz.app:main"
+
+[tool.setuptools]
+packages = ["zf_viz"]
+EOF

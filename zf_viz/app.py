@@ -10,7 +10,6 @@
 import argparse                                   ## lets us read options typed after "python zf_viz.py" (like --export)
 import os                                         ## lets us build file paths that work on Mac/Windows
 from functools import lru_cache                   ## remembers results of a function so we never compute the same gene twice
-
 import h5py                                       ## reads .h5ad files directly (the file format is HDF5 underneath)
 import numpy as np                                ## fast math on big arrays of numbers
 import pandas as pd                               ## spreadsheet-like tables (DataFrames)
@@ -19,8 +18,6 @@ import plotly.graph_objects as go                 ## lower-level plotly pieces (
 from plotly.subplots import make_subplots         ## lets us tile many small charts in a grid
 
 ## ---------------------------------------------------------------- 2. SETTINGS (edit these)
-H5AD_PATH = os.environ.get("ZF_H5AD", "/Users/shawnlam/Everything GRAD/Literature/Research/ZF_RNA_final_browser_raw_counts.h5ad")  ## where your data file lives; set the ZF_H5AD environment variable to override without editing the script
-CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zf_cell_totals.npy")  ## small file where we save per-cell total counts so the 2nd launch is fast
 TARGET_SUM = 1e4                                  ## normalization target: every cell is rescaled to 10,000 counts (the Seurat/Scanpy default)
 MIN_CELLS_PER_SAMPLE = 20                         ## ignore a sample x cell-type bar if it has fewer cells than this (too noisy to trust)
 MAX_UMAP_CELLS = 60000                            ## draw at most this many cells on the UMAP so the browser stays fast
@@ -31,40 +28,29 @@ GROUP_COLORS = {                                  ## colour-blind-safe palette (
     "P30_SONG": "#D55E00",                        ## P30 song-exposed   = dark orange
 }
 
-## ---------------------------------------------------------------- 3. LOAD THE DATA
-f = h5py.File(H5AD_PATH, "r")                     ## open the file (does NOT load the 1.1 GB into memory, just opens it)
-N_CELLS, N_GENES = [int(x) for x in f["X"].attrs["shape"]]  ## the matrix is cells x genes; read both sizes
+## ---------------------------------------------------------------- 3. DATA PLACEHOLDERS (filled in by load())
+f = obs = umap = gene_index = indptr = CELL_TOTALS = None  ## empty until load() runs
+gene_names, CELLTYPE_ORDER = [], []               ## empty until load() runs
+N_CELLS = N_GENES = 0                             ## filled in by load()
+GROUP_ORDER = ["P23_SIL", "P23_SONG", "P30_SIL", "P30_SONG"]  ## fixed left-to-right order of groups on every plot
 
 
 def read_cat(col):                                ## helper: turn one stored category column into plain text labels
     cats = [c.decode() if isinstance(c, bytes) else str(c) for c in f["obs"][col]["categories"][:]]  ## the list of possible labels
-    return pd.Categorical.from_codes(f["obs"][col]["codes"][:], cats)  ## attach the right label to every one of the 148,722 cells
+    return pd.Categorical.from_codes(f["obs"][col]["codes"][:], cats)  ## attach the right label to every cell
 
 
-obs = pd.DataFrame({                              ## build the per-cell table ("obs" = observations = cells)
-    "sex": read_cat("sex"),                       ## FEMALE / MALE
-    "condition": read_cat("condition"),           ## SIL (silent) / SONG (song-exposed)
-    "age": read_cat("age"),                       ## P23 / P30
-    "celltype": read_cat("anno_v4"),              ## the 36 cell types
-    "lineage": read_cat("lineage"),               ## Glutamatergic / GABAergic / Other
-    "sample": read_cat("orig.ident"),             ## which of the 24 animals/libraries the cell came from
-})                                                ## end of table
-obs["group"] = obs["age"].astype(str) + "_" + obs["condition"].astype(str)  ## combined label, e.g. "P23_SONG"
-umap = f["obsm/X_umap"][:]                        ## the 2-D UMAP coordinates already computed for every cell
-gene_names = [g.decode() if isinstance(g, bytes) else str(g) for g in f["var/name"][:]]  ## all 21,765 gene names
-gene_index = {g: i for i, g in enumerate(gene_names)}  ## dictionary: gene name -> column number (fast lookup)
-indptr = f["X/indptr"][:]                         ## "table of contents" telling us where each gene's data starts/ends in the file
-
-## order cell types by lineage (so excitatory/inhibitory/other cluster together), then alphabetically
-lineage_of = obs.drop_duplicates("celltype").set_index("celltype")["lineage"].astype(str)  ## cell type -> lineage
-CELLTYPE_ORDER = sorted(lineage_of.index.astype(str), key=lambda c: (lineage_of[c], c))  ## the sorted list of 36 names
-GROUP_ORDER = ["P23_SIL", "P23_SONG", "P30_SIL", "P30_SONG"]  ## fixed left-to-right order of groups on every plot
+def cache_file(h5ad_path):                        ## where to save the per-cell totals
+    st = os.stat(h5ad_path)                       ## file size and date, so a different data file gets its own cache
+    key = f"{os.path.basename(h5ad_path)}_{st.st_size}_{int(st.st_mtime)}"  ## unique name per data file
+    d = os.path.join(os.path.expanduser("~"), ".cache", "zf_viz")  ## a folder you can always write to
+    os.makedirs(d, exist_ok=True)                 ## create it if missing
+    return os.path.join(d, key + "_totals.npy")   ## full cache file path
 
 
-## ---------------------------------------------------------------- 4. NORMALIZATION HELPERS
-def compute_cell_totals():                        ## total counts per cell (needed to normalize); cached on disk
-    if os.path.exists(CACHE_PATH):                ## if we already did this once...
-        return np.load(CACHE_PATH)                ## ...just reload it (instant)
+def compute_cell_totals(cache_path):              ## total counts per cell (needed to normalize); cached on disk
+    if os.path.exists(cache_path):                ## if we already did this once...
+        return np.load(cache_path)                ## ...just reload it (instant)
     totals = np.zeros(N_CELLS)                    ## start every cell at 0
     n = f["X/data"].shape[0]                      ## number of non-zero entries in the whole matrix
     step = 20_000_000                             ## read the file in chunks of 20 million entries to save memory
@@ -72,13 +58,31 @@ def compute_cell_totals():                        ## total counts per cell (need
         d = f["X/data"][start:start + step]       ## the counts in this chunk
         i = f["X/indices"][start:start + step]    ## which cell each count belongs to
         totals += np.bincount(i, weights=d, minlength=N_CELLS)  ## add each count onto its cell's running total
-    np.save(CACHE_PATH, totals)                   ## save so we never repeat this slow step
+    np.save(cache_path, totals)                   ## save so we never repeat this slow step
     return totals                                 ## give the answer back
 
 
-CELL_TOTALS = compute_cell_totals()               ## run it once at startup
-CELL_TOTALS[CELL_TOTALS == 0] = 1                 ## avoid dividing by zero for any empty cell
-
+def load(h5ad_path):                              ## open the data; called once at startup by main()
+    global f, N_CELLS, N_GENES, obs, umap, gene_names, gene_index, indptr, CELL_TOTALS, CELLTYPE_ORDER  ## fill the module-level names
+    f = h5py.File(h5ad_path, "r")                 ## open the file (does NOT load the 1.1 GB into memory)
+    N_CELLS, N_GENES = [int(x) for x in f["X"].attrs["shape"]]  ## the matrix is cells x genes; read both sizes
+    obs = pd.DataFrame({                          ## build the per-cell table
+        "sex": read_cat("sex"),                   ## FEMALE / MALE
+        "condition": read_cat("condition"),       ## SIL / SONG
+        "age": read_cat("age"),                   ## P23 / P30
+        "celltype": read_cat("anno_v4"),          ## the 36 cell types
+        "lineage": read_cat("lineage"),           ## Glutamatergic / GABAergic / Other
+        "sample": read_cat("orig.ident"),         ## which of the 24 animals each cell came from
+    })                                            ## end of table
+    obs["group"] = obs["age"].astype(str) + "_" + obs["condition"].astype(str)  ## combined label, e.g. "P23_SONG"
+    umap = f["obsm/X_umap"][:]                    ## the 2-D UMAP coordinates for every cell
+    gene_names = [g.decode() if isinstance(g, bytes) else str(g) for g in f["var/name"][:]]  ## all gene names
+    gene_index = {g: i for i, g in enumerate(gene_names)}  ## gene name -> column number
+    indptr = f["X/indptr"][:]                     ## where each gene's data starts/ends in the file
+    lineage_of = obs.drop_duplicates("celltype").set_index("celltype")["lineage"].astype(str)  ## cell type -> lineage
+    CELLTYPE_ORDER = sorted(lineage_of.index.astype(str), key=lambda c: (lineage_of[c], c))  ## 36 names, grouped by lineage
+    CELL_TOTALS = compute_cell_totals(cache_file(h5ad_path))  ## per-cell totals (slow only the first time)
+    CELL_TOTALS[CELL_TOTALS == 0] = 1             ## avoid dividing by zero for any empty cell
 
 @lru_cache(maxsize=256)                           ## keep the last 256 genes in memory
 def raw_counts(gene):                             ## raw (SoupX-corrected) counts of ONE gene for ALL cells
@@ -287,14 +291,18 @@ def build_app():                                  ## creates the web page with d
 
 
 ## ---------------------------------------------------------------- 8. ENTRY POINT
-if __name__ == "__main__":                        ## only runs when you execute the file (not when imported)
-    ap = argparse.ArgumentParser()                ## set up command-line options
-    ap.add_argument("--export", nargs="+", help="gene(s) to save as static HTML instead of launching the app")  ## e.g. --export MEF2C
+def main():                                       ## the entry point behind the "zf-viz" command
+    ap = argparse.ArgumentParser(prog="zf-viz")   ## command-line options
+    ap.add_argument("--h5ad", default=os.environ.get("ZF_H5AD"), help="path to the .h5ad file (or set ZF_H5AD)")  ## data path
+    ap.add_argument("--export", nargs="+", help="gene(s) to save as static HTML instead of launching the app")  ## e.g. --export MEF2C MEF2A
     ap.add_argument("--sex", nargs="+", default=None, help="MALE and/or FEMALE")  ## optional sex filter for export
     ap.add_argument("--cond", nargs="+", default=None, help="SIL and/or SONG")  ## optional condition filter
     ap.add_argument("--age", nargs="+", default=None, help="P23 and/or P30")  ## optional age filter
     args = ap.parse_args()                        ## read what the user typed
-    if args.export:                               ## export mode
+    if not args.h5ad:                             ## no data path given
+        ap.error("give --h5ad PATH or set the ZF_H5AD environment variable")  ## stop with a clear message
+    load(args.h5ad)                               ## load the data now, not at import time
+    if args.export:                               ## export mode: save HTML files, no server
         tag = "_".join(args.export[:3]) + ("_" + "_".join(args.sex) if args.sex else "")  ## file-name stem
         for g in args.export:                     ## one per-animal bar chart for EACH gene you listed
             fig_pseudobulk(g, args.sex, args.cond, args.age, None).write_html(f"{g}_{'_'.join(args.sex or ['ALL'])}_bars.html")  ## e.g. MEF2C_MALE_bars.html
@@ -302,3 +310,5 @@ if __name__ == "__main__":                        ## only runs when you execute 
         print("saved bars for", args.export, "and", f"{tag}_dot_group.html")  ## tell the user
     else:                                         ## interactive mode
         build_app().run(debug=False, port=8050)   ## open http://127.0.0.1:8050 in your browser
+if __name__ == "__main__":                        ## still lets "python app.py" work
+    main()                                        ## run it
