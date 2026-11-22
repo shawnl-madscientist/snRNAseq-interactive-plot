@@ -1,4 +1,4 @@
-cat > pyproject.toml << 'EOF'
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
@@ -22,4 +22,3 @@ zf-viz = "zf_viz.app:main"
 
 [tool.setuptools]
 packages = ["zf_viz"]
-EOF
